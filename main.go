@@ -35,6 +35,7 @@ func main() {
 		queriesFile string
 		output      string
 		limit       int
+		radiusKm    float64
 		headless    bool
 		timeoutSec  int
 		delaySec    int
@@ -44,9 +45,10 @@ func main() {
 	flag.Var(&qParams, "q", "Shorthand for -query")
 	flag.StringVar(&queriesFile, "queries", "", "File with one query per line")
 	flag.StringVar(&output, "output", "results.csv", "Output CSV file path")
-	flag.IntVar(&limit, "limit", 10, "Max results per query")
+	flag.IntVar(&limit, "limit", 0, "Max results per query (0 = unlimited, scroll all)")
+	flag.Float64Var(&radiusKm, "radius", defaultRadiusKm, "Search radius in km from query location")
 	flag.BoolVar(&headless, "headless", true, "Run browser in headless mode")
-	flag.IntVar(&timeoutSec, "timeout", 180, "Timeout in seconds per query")
+	flag.IntVar(&timeoutSec, "timeout", 600, "Timeout in seconds per query")
 	flag.IntVar(&delaySec, "delay", 2, "Delay in seconds between place detail requests")
 	flag.Parse()
 
@@ -59,6 +61,7 @@ func main() {
 		fmt.Println()
 		fmt.Println("Usage:")
 		fmt.Println(`  google-maps-scraper.exe -q "carpenter in daman"`)
+		fmt.Println(`  google-maps-scraper.exe -q "carpenter in daman" -radius 15`)
 		fmt.Println(`  google-maps-scraper.exe -q "carpenter in daman" -q "steel industry in vapi"`)
 		fmt.Println(`  google-maps-scraper.exe -q "carpenter in daman, steel industry in vapi"`)
 		fmt.Println(`  google-maps-scraper.exe "carpenter in daman" "steel industry in vapi"`)
@@ -73,6 +76,7 @@ func main() {
 		Headless: headless,
 		Timeout:  time.Duration(timeoutSec) * time.Second,
 		Delay:    time.Duration(delaySec) * time.Second,
+		RadiusKm: radiusKm,
 	}
 
 	ctx := context.Background()

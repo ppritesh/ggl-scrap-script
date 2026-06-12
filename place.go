@@ -24,5 +24,6 @@ type Place struct {
 	MenuURL     string
 	BookingURL  string
 	OrderURL    string
+	DistanceKm  string
 	MapsURL     string
 }

@@ -14,6 +14,13 @@ type Scraper struct {
 	Headless bool
 	Timeout  time.Duration
 	Delay    time.Duration
+	RadiusKm float64
+}
+
+type mapCenter struct {
+	Lat  string `json:"lat"`
+	Lng  string `json:"lng"`
+	Zoom string `json:"zoom"`
 }
 
 func (s *Scraper) ScrapeQuery(ctx context.Context, query string, limit int) ([]Place, error) {
@@ -38,7 +45,7 @@ func (s *Scraper) ScrapeQuery(ctx context.Context, query string, limit int) ([]P
 	}
 
 	searchURL := "https://www.google.com/maps/search/" + strings.ReplaceAll(query, " ", "+")
-	log.Printf("searching: %q", query)
+	log.Printf("searching: %q (radius: %.0f km, limit: %s)", query, s.RadiusKm, limitLabel(limit))
 
 	if err := chromedp.Run(browserCtx,
 		chromedp.Navigate(searchURL),
@@ -49,6 +56,30 @@ func (s *Scraper) ScrapeQuery(ctx context.Context, query string, limit int) ([]P
 		chromedp.Sleep(2*time.Second),
 	); err != nil {
 		return nil, fmt.Errorf("open search page: %w", err)
+	}
+
+	center, err := readMapCenter(browserCtx)
+	if err != nil {
+		log.Printf("warning: read map center: %v", err)
+	}
+
+	if center.Lat != "" && center.Lng != "" {
+		zoom := zoomForRadiusKm(s.RadiusKm)
+		biasedURL := fmt.Sprintf(
+			"https://www.google.com/maps/search/%s/@%s,%s,%dz",
+			strings.ReplaceAll(query, " ", "+"),
+			center.Lat,
+			center.Lng,
+			zoom,
+		)
+		if err := chromedp.Run(browserCtx,
+			chromedp.Navigate(biasedURL),
+			chromedp.Sleep(3*time.Second),
+		); err != nil {
+			log.Printf("warning: radius-biased search: %v", err)
+		} else {
+			log.Printf("search centered at %s,%s (zoom %d, ~%.0f km radius)", center.Lat, center.Lng, zoom, s.RadiusKm)
+		}
 	}
 
 	if err := scrollResultsFeed(browserCtx, limit); err != nil {
@@ -62,6 +93,10 @@ func (s *Scraper) ScrapeQuery(ctx context.Context, query string, limit int) ([]P
 
 	log.Printf("found %d listings for %q", len(links), query)
 
+	centerLat, hasCenterLat := parseCoord(center.Lat)
+	centerLng, hasCenterLng := parseCoord(center.Lng)
+	hasCenter := hasCenterLat && hasCenterLng
+
 	places := make([]Place, 0, len(links))
 	for i, link := range links {
 		log.Printf("  [%d/%d] %s", i+1, len(links), link.Name)
@@ -72,6 +107,19 @@ func (s *Scraper) ScrapeQuery(ctx context.Context, query string, limit int) ([]P
 			continue
 		}
 
+		if hasCenter && s.RadiusKm > 0 {
+			lat, okLat := parseCoord(place.Latitude)
+			lng, okLng := parseCoord(place.Longitude)
+			if okLat && okLng {
+				dist := haversineKm(centerLat, centerLng, lat, lng)
+				place.DistanceKm = fmt.Sprintf("%.2f", dist)
+				if dist > s.RadiusKm {
+					log.Printf("  skip %q: %.1f km away (outside %.0f km radius)", place.Name, dist, s.RadiusKm)
+					continue
+				}
+			}
+		}
+
 		places = append(places, place)
 
 		if s.Delay > 0 && i < len(links)-1 {
@@ -79,7 +127,27 @@ func (s *Scraper) ScrapeQuery(ctx context.Context, query string, limit int) ([]P
 		}
 	}
 
+	log.Printf("kept %d places within %.0f km for %q", len(places), s.RadiusKm, query)
 	return places, nil
+}
+
+func limitLabel(limit int) string {
+	if limit <= 0 {
+		return "unlimited"
+	}
+	return fmt.Sprintf("%d", limit)
+}
+
+func readMapCenter(ctx context.Context) (mapCenter, error) {
+	var center mapCenter
+	err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`
+		(() => {
+			const m = window.location.href.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*),(\d+\.?\d*)?z/);
+			if (!m) return { lat: '', lng: '', zoom: '' };
+			return { lat: m[1], lng: m[2], zoom: m[3] || '' };
+		})()
+	`, &center))
+	return center, err
 }
 
 type resultLink struct {
@@ -111,9 +179,12 @@ func dismissConsent(ctx context.Context) error {
 }
 
 func scrollResultsFeed(ctx context.Context, limit int) error {
-	scrolls := limit/5 + 3
-	if scrolls > 15 {
-		scrolls = 15
+	scrolls := 100
+	if limit > 0 {
+		scrolls = limit/5 + 5
+		if scrolls > 30 {
+			scrolls = 30
+		}
 	}
 
 	for i := 0; i < scrolls; i++ {
@@ -142,6 +213,11 @@ func scrollResultsFeed(ctx context.Context, limit int) error {
 }
 
 func collectResultLinks(ctx context.Context, limit int) ([]resultLink, error) {
+	limitCheck := ""
+	if limit > 0 {
+		limitCheck = fmt.Sprintf("if (out.length >= %d) break;", limit)
+	}
+
 	var raw []map[string]string
 	err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(fmt.Sprintf(`
 		(() => {
@@ -162,12 +238,12 @@ func collectResultLinks(ctx context.Context, limit int) ([]resultLink, error) {
 
 				seen.add(href);
 				out.push({ name, url: href });
-				if (out.length >= %d) break;
+				%s
 			}
 
 			return out;
 		})()
-	`, limit), &raw))
+	`, limitCheck), &raw))
 	if err != nil {
 		return nil, err
 	}

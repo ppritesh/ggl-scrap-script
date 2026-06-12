@@ -29,6 +29,7 @@ var csvHeaders = []string{
 	"menu_url",
 	"booking_url",
 	"order_url",
+	"distance_km",
 	"maps_url",
 }
 
@@ -70,6 +71,7 @@ func writeCSV(path string, places []Place) error {
 			p.MenuURL,
 			p.BookingURL,
 			p.OrderURL,
+			p.DistanceKm,
 			p.MapsURL,
 		}
 		if err := writer.Write(row); err != nil {
