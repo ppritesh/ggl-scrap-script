@@ -1,0 +1,11 @@
+# Binaries
+*.exe
+google-maps-scraper
+
+# Test output
+test-results.csv
+results.csv
+
+# OS
+.DS_Store
+Thumbs.db
